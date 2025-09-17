@@ -1,11 +1,12 @@
 const express = require('express');
 const cors = require('cors');
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const fetch = require('node-fetch');
 const { v4: uuidv4 } = require('uuid');
 const cloudinary = require('cloudinary').v2;
+const cron = require('node-cron');
 require('dotenv').config();
 
 const app = express();
@@ -27,6 +28,37 @@ const TEMP_DIR = path.join(__dirname, 'temp');
 if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
+
+// Auto-cleanup: Remove videos older than 30 days from Cloudinary
+// Runs daily at 2 AM
+cron.schedule('0 2 * * *', async () => {
+  try {
+    console.log('🗑️ Starting auto-cleanup of 30+ day old videos...');
+    
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    // Search for videos older than 30 days
+    const result = await cloudinary.search
+      .expression('folder:merged-videos AND created_at<' + thirtyDaysAgo.toISOString())
+      .sort_by([['created_at', 'desc']])
+      .max_results(100)
+      .execute();
+    
+    for (const resource of result.resources) {
+      try {
+        await cloudinary.uploader.destroy(resource.public_id, { resource_type: 'video' });
+        console.log(`🗑️ Deleted old video: ${resource.public_id}`);
+      } catch (error) {
+        console.error(`❌ Failed to delete ${resource.public_id}:`, error.message);
+      }
+    }
+    
+    console.log(`🗑️ Cleanup complete. Processed ${result.resources.length} old videos.`);
+  } catch (error) {
+    console.error('❌ Auto-cleanup error:', error.message);
+  }
+});
 
 // Helper function to download video from URL
 async function downloadVideo(url, filename) {
@@ -60,12 +92,14 @@ function mergeVideos(inputFiles, outputFile) {
     const listContent = inputFiles.map(file => `file '${file}'`).join('\n');
     fs.writeFileSync(listFile, listContent);
     
-    // FFmpeg command to concatenate videos
+    // FFmpeg command to concatenate videos with quality preservation
     const ffmpegArgs = [
       '-f', 'concat',
       '-safe', '0',
       '-i', listFile,
-      '-c', 'copy',
+      '-c', 'copy', // Copy streams without re-encoding (preserves quality)
+      '-avoid_negative_ts', 'make_zero',
+      '-fflags', '+genpts',
       '-y', // Overwrite output file
       outputFile
     ];
@@ -112,7 +146,9 @@ async function uploadToCloudinary(filePath, publicId) {
       public_id: publicId,
       folder: 'merged-videos',
       quality: 'auto',
-      format: 'mp4'
+      format: 'mp4',
+      // Auto-delete after 30 days (2592000 seconds)
+      expiration: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60)
     });
     
     console.log(`Upload successful. URL: ${result.secure_url}`);
@@ -144,9 +180,11 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'FFmpeg Video Merger',
-    version: '2.0.0',
+    version: '2.1.0',
     time: new Date().toISOString(),
-    cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? 'configured' : 'not configured'
+    cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? 'configured' : 'not configured',
+    autoCleanup: 'enabled (30 days)',
+    qualityPreservation: 'enabled'
   });
 });
 
@@ -154,8 +192,14 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     service: 'FFmpeg Video Merger API',
-    version: '2.0.0',
-    description: 'Merge videos and upload to Cloudinary',
+    version: '2.1.0',
+    description: 'Merge videos and upload to Cloudinary with auto-cleanup',
+    features: [
+      'Video merging with quality preservation',
+      'Cloudinary CDN hosting',
+      'Auto-cleanup after 30 days',
+      'n8n integration ready'
+    ],
     endpoints: {
       health: 'GET /health',
       merge: 'POST /merge-videos'
@@ -234,6 +278,8 @@ app.post('/merge-videos', async (req, res) => {
       videoUrl: cloudinaryUrl,
       publicId: publicId,
       videosProcessed: videoUrls.length,
+      autoDelete: '30 days',
+      qualityPreservation: 'enabled',
       timestamp: new Date().toISOString()
     };
     
@@ -275,10 +321,12 @@ app.use((req, res) => {
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 FFmpeg Video Merger API running on port ${PORT}`);
+  console.log(`🚀 FFmpeg Video Merger API v2.1.0 running on port ${PORT}`);
   console.log(`📡 Health check: http://localhost:${PORT}/health`);
   console.log(`🔗 API info: http://localhost:${PORT}/`);
   console.log(`☁️  Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? 'Configured' : 'Not configured'}`);
+  console.log(`🗑️ Auto-cleanup: Enabled (30 days)`);
+  console.log(`🎥 Quality preservation: Enabled`);
   console.log(`🌍 Domain: ${process.env.DOMAIN || 'Not set'}`);
 });
 

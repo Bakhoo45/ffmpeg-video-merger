@@ -1,15 +1,18 @@
-# FFmpeg Video Merger API
+# FFmpeg Video Merger API v2.1.0
 
-A robust video merging API that processes multiple video URLs, merges them using FFmpeg, and uploads the result to Cloudinary CDN. Perfect for n8n automation workflows.
+A robust video merging API that processes multiple video URLs, merges them using FFmpeg with quality preservation, uploads to Cloudinary CDN with auto-cleanup, and integrates seamlessly with n8n automation workflows.
 
 ## 🚀 Features
 
-- **Video Merging**: Concatenate multiple videos using FFmpeg
+- **Video Merging**: Concatenate multiple videos using FFmpeg with quality preservation
 - **Cloudinary Integration**: Automatic upload to Cloudinary CDN
+- **Auto-Cleanup**: Videos automatically deleted after 30 days
+- **Quality Preservation**: No re-encoding, maintains original video quality
 - **Domain Security**: Use custom domain instead of IP addresses
 - **Process Management**: PM2 for production reliability
 - **Error Handling**: Comprehensive error management
 - **Health Monitoring**: Built-in health check endpoints
+- **Scheduled Tasks**: Daily cleanup of expired videos
 
 ## 📋 Prerequisites
 
@@ -19,6 +22,14 @@ A robust video merging API that processes multiple video URLs, merges them using
 - PM2 process manager
 - Cloudinary account
 - DuckDNS account (optional)
+
+## ⭐ New in v2.1.0
+
+- **Auto-Cleanup**: Videos automatically deleted from Cloudinary after 30 days
+- **Quality Preservation**: FFmpeg copy mode maintains original video quality
+- **Scheduled Tasks**: Daily cleanup job runs at 2 AM
+- **Enhanced Monitoring**: Health endpoint shows cleanup and quality status
+- **Better Logging**: Detailed process information and cleanup reports
 
 ## 🛠️ Server Setup
 
@@ -36,7 +47,6 @@ A robust video merging API that processes multiple video URLs, merges them using
 ```bash
 # Update system
 sudo apt update && sudo apt upgrade -y
-
 # Install Node.js 18.x
 curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
 sudo apt-get install -y nodejs
@@ -122,7 +132,7 @@ sudo ufw status
 
 ```bash
 # Create update script
-echo "echo url=\"https://www.duckdns.org/update?domains=videomerger&token=YOUR_TOKEN&ip=\" | curl -k -o ~/duckdns.log -K -" > ~/duckdns.sh
+echo "echo url=\"https://www.duckdns.org/update?domains=videomerger&token=9862fa3a-4a48-44af-acd4-b9c7549a089b&ip=\" | curl -k -o ~/duckdns.log -K -" > ~/duckdns.sh
 chmod +x ~/duckdns.sh
 
 # Test the script
@@ -180,6 +190,8 @@ Content-Type: application/json
   "videoUrl": "https://res.cloudinary.com/your-cloud/video/upload/merged-videos/merged_123456.mp4",
   "publicId": "merged_123456",
   "videosProcessed": 2,
+  "autoDelete": "30 days",
+  "qualityPreservation": "enabled",
   "timestamp": "2025-09-16T12:00:00.000Z"
 }
 ```
@@ -249,7 +261,7 @@ pm2 monit
 ```bash
 cd /opt/ffmpeg-video-merger
 git pull origin main
-npm install
+npm install  # Install any new dependencies (like node-cron)
 pm2 restart ffmpeg-video-merger
 ```
 
