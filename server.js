@@ -141,7 +141,13 @@ async function uploadToCloudinary(filePath, publicId) {
   try {
     console.log(`Uploading to Cloudinary: ${filePath}`);
     
-    const result = await cloudinary.uploader.upload(filePath, {
+    // Check file size and use appropriate upload method
+    const stats = fs.statSync(filePath);
+    const fileSizeMB = stats.size / (1024 * 1024);
+    
+    console.log(`📊 Video file size: ${fileSizeMB.toFixed(2)}MB`);
+    
+    let uploadOptions = {
       resource_type: 'video',
       public_id: publicId,
       folder: 'merged-videos',
@@ -149,7 +155,18 @@ async function uploadToCloudinary(filePath, publicId) {
       format: 'mp4',
       // Auto-delete after 30 days (2592000 seconds)
       expiration: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60)
-    });
+    };
+
+    // For large files (>100MB), use async processing
+    if (fileSizeMB > 100) {
+      console.log('🔄 Large file detected, using async upload...');
+      uploadOptions.eager_async = true;
+      uploadOptions.eager = [
+        { quality: 'auto', format: 'mp4' }
+      ];
+    }
+
+    const result = await cloudinary.uploader.upload(filePath, uploadOptions);
     
     console.log(`Upload successful. URL: ${result.secure_url}`);
     return result.secure_url;
@@ -180,11 +197,12 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'FFmpeg Video Merger',
-    version: '2.1.0',
+    version: '2.2.0',
     time: new Date().toISOString(),
     cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? 'configured' : 'not configured',
     autoCleanup: 'enabled (30 days)',
-    qualityPreservation: 'enabled'
+    qualityPreservation: 'enabled',
+    largeFileHandling: 'enabled (async >100MB)'
   });
 });
 
@@ -192,12 +210,13 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     service: 'FFmpeg Video Merger API',
-    version: '2.1.0',
-    description: 'Merge videos and upload to Cloudinary with auto-cleanup',
+    version: '2.2.0',
+    description: 'Merge videos and upload to Cloudinary with auto-cleanup and large file support',
     features: [
       'Video merging with quality preservation',
       'Cloudinary CDN hosting',
       'Auto-cleanup after 30 days',
+      'Large file async processing (>100MB)',
       'n8n integration ready'
     ],
     endpoints: {
@@ -271,6 +290,10 @@ app.post('/merge-videos', async (req, res) => {
     // Clean up temporary files
     cleanupFiles([...downloadedFiles, outputPath]);
     
+    // Get file size for response
+    const finalStats = fs.existsSync(outputPath) ? fs.statSync(outputPath) : null;
+    const finalSize = finalStats ? `${(finalStats.size / 1024 / 1024).toFixed(2)}MB` : 'Unknown';
+
     // Success response
     const response = {
       success: true,
@@ -278,12 +301,12 @@ app.post('/merge-videos', async (req, res) => {
       videoUrl: cloudinaryUrl,
       publicId: publicId,
       videosProcessed: videoUrls.length,
+      fileSize: finalSize,
       autoDelete: '30 days',
       qualityPreservation: 'enabled',
+      uploadType: fileSizeMB > 100 ? 'async' : 'sync',
       timestamp: new Date().toISOString()
-    };
-    
-    console.log('Merge completed successfully:', response);
+    };    console.log('Merge completed successfully:', response);
     res.json(response);
     
   } catch (error) {
@@ -321,12 +344,13 @@ app.use((req, res) => {
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 FFmpeg Video Merger API v2.1.0 running on port ${PORT}`);
+  console.log(`🚀 FFmpeg Video Merger API v2.2.0 running on port ${PORT}`);
   console.log(`📡 Health check: http://localhost:${PORT}/health`);
   console.log(`🔗 API info: http://localhost:${PORT}/`);
   console.log(`☁️  Cloudinary: ${process.env.CLOUDINARY_CLOUD_NAME ? 'Configured' : 'Not configured'}`);
   console.log(`🗑️ Auto-cleanup: Enabled (30 days)`);
   console.log(`🎥 Quality preservation: Enabled`);
+  console.log(`📦 Large file handling: Enabled (async >100MB)`);
   console.log(`🌍 Domain: ${process.env.DOMAIN || 'Not set'}`);
 });
 
