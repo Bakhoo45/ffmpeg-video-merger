@@ -1,6 +1,6 @@
 {
   "name": "ffmpeg-video-merger",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Video merger API with Cloudinary integration, auto-cleanup, quality preservation, and large file handling for n8n workflows",
   "main": "server.js",
   "scripts": {

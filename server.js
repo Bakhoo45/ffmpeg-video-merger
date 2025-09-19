@@ -153,15 +153,15 @@ async function uploadToCloudinary(filePath, publicId) {
     
     console.log(`📊 Video file size: ${fileSizeMB.toFixed(2)}MB`);
     
-    // Strategy 1: Very large files (>200MB) - Use streaming upload
+    // Strategy 1: Very large files (>200MB) - Use streaming upload with proper async config
     if (fileSizeMB > 200) {
       console.log('🌊 Very large file detected, using streaming upload...');
       return await uploadLargeFileWithStreaming(filePath, publicId);
     }
     
-    // Strategy 2: Large files (100-200MB) - Use upload_large with chunking
+    // Strategy 2: Large files (100-200MB) - Use upload_large with proper eager_async
     else if (fileSizeMB > 100) {
-      console.log('📦 Large file detected, using chunked upload...');
+      console.log('📦 Large file detected, using chunked upload with eager_async...');
       
       try {
         const result = await cloudinary.uploader.upload_large(filePath, {
@@ -172,11 +172,14 @@ async function uploadToCloudinary(filePath, publicId) {
           eager_async: true,
           eager: [
             { 
-              quality: 'auto:good', 
               format: 'mp4',
-              video_codec: 'h264'
+              video_codec: 'auto',
+              quality: 'auto'
             }
           ],
+          // Don't process synchronously - let Cloudinary handle async
+          use_filename: false,
+          unique_filename: true,
           expiration: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60)
         });
         
@@ -188,7 +191,7 @@ async function uploadToCloudinary(filePath, publicId) {
       }
     }
     
-    // Strategy 3: Medium files (50-100MB) - Use async processing
+    // Strategy 3: Medium files (50-100MB) - Use async processing with proper config
     else if (fileSizeMB > 50) {
       console.log('🔄 Medium file detected, using async upload...');
       
@@ -198,8 +201,14 @@ async function uploadToCloudinary(filePath, publicId) {
         folder: 'merged-videos',
         eager_async: true,
         eager: [
-          { quality: 'auto', format: 'mp4' }
+          { 
+            format: 'mp4',
+            video_codec: 'auto',
+            quality: 'auto'
+          }
         ],
+        use_filename: false,
+        unique_filename: true,
         expiration: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60)
       });
       
@@ -225,29 +234,42 @@ async function uploadToCloudinary(filePath, publicId) {
     }
     
   } catch (error) {
-    console.error(`❌ All upload strategies failed: ${error.message}`);
+    console.error(`❌ Upload strategy failed: ${error.message}`);
     
-    // Final fallback: Try with minimal options and compression
+    // Final fallback: Use raw upload without any transformations
     if (error.message.includes('too large') || error.message.includes('synchronously')) {
-      console.log('🔧 Attempting final fallback with compression...');
+      console.log('🔧 Attempting raw upload without transformations...');
       
       try {
         const result = await cloudinary.uploader.upload(filePath, {
           resource_type: 'video',
-          public_id: publicId + '_compressed',
+          public_id: publicId + '_raw',
           folder: 'merged-videos',
-          eager_async: true,
-          quality: 'auto:low',
-          video_codec: 'h264',
-          bit_rate: '500k', // Very low bitrate
-          fps: 24
+          // No eager transformations - just upload the file as-is
+          use_filename: false,
+          unique_filename: true,
+          expiration: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60)
         });
         
-        console.log(`✅ Fallback upload successful: ${result.secure_url}`);
+        console.log(`✅ Raw upload successful: ${result.secure_url}`);
         return result.secure_url;
-      } catch (fallbackError) {
-        console.error(`❌ Final fallback also failed: ${fallbackError.message}`);
-        throw new Error(`All upload methods failed. Original: ${error.message}, Fallback: ${fallbackError.message}`);
+      } catch (rawError) {
+        console.error(`❌ Raw upload also failed: ${rawError.message}`);
+        
+        // Last resort: Try unsigned upload
+        try {
+          console.log('🔧 Last resort: Trying unsigned upload...');
+          const result = await cloudinary.uploader.unsigned_upload(filePath, 'ml_default', {
+            resource_type: 'video',
+            folder: 'merged-videos'
+          });
+          
+          console.log(`✅ Unsigned upload successful: ${result.secure_url}`);
+          return result.secure_url;
+        } catch (unsignedError) {
+          console.error(`❌ All upload methods failed: ${unsignedError.message}`);
+          throw new Error(`All upload methods failed. Original: ${error.message}, Raw: ${rawError.message}, Unsigned: ${unsignedError.message}`);
+        }
       }
     }
     
@@ -323,6 +345,89 @@ function compressVideoSmart(inputPath, outputPath, targetSizeMB = 90) {
   });
 }
 
+// Quality-preserving smart resize function - only reduces resolution, keeps quality
+function resizeVideoSmart(inputPath, outputPath, maxWidth = 1280, maxHeight = 720) {
+  return new Promise((resolve, reject) => {
+    console.log(`📐 Smart resize: targeting max ${maxWidth}x${maxHeight} while preserving quality`);
+    
+    // Get video info first
+    ffmpeg.ffprobe(inputPath, (err, metadata) => {
+      if (err) {
+        console.error('FFprobe error:', err);
+        return reject(err);
+      }
+      
+      const videoStream = metadata.streams.find(stream => stream.codec_type === 'video');
+      const currentWidth = videoStream.width;
+      const currentHeight = videoStream.height;
+      const currentSizeMB = metadata.format.size / (1024 * 1024);
+      
+      console.log(`📊 Current resolution: ${currentWidth}x${currentHeight}, Size: ${currentSizeMB.toFixed(2)}MB`);
+      
+      // Calculate new dimensions while maintaining aspect ratio
+      let newWidth = currentWidth;
+      let newHeight = currentHeight;
+      
+      if (currentWidth > maxWidth || currentHeight > maxHeight) {
+        const aspectRatio = currentWidth / currentHeight;
+        
+        if (currentWidth > currentHeight) {
+          newWidth = maxWidth;
+          newHeight = Math.round(maxWidth / aspectRatio);
+        } else {
+          newHeight = maxHeight;
+          newWidth = Math.round(maxHeight * aspectRatio);
+        }
+        
+        // Ensure dimensions are even (required for h264)
+        newWidth = newWidth % 2 === 0 ? newWidth : newWidth - 1;
+        newHeight = newHeight % 2 === 0 ? newHeight : newHeight - 1;
+      }
+      
+      console.log(`📐 New resolution: ${newWidth}x${newHeight}`);
+      
+      // If no resize needed, just copy the file
+      if (newWidth === currentWidth && newHeight === currentHeight) {
+        console.log('📐 No resize needed, file is already optimal size');
+        fs.copyFileSync(inputPath, outputPath);
+        resolve();
+        return;
+      }
+      
+      ffmpeg(inputPath)
+        .videoCodec('libx264')
+        .audioCodec('aac')
+        .size(`${newWidth}x${newHeight}`)
+        .addOptions([
+          '-preset slow',      // Better quality
+          '-crf 18',           // High quality (lower = better)
+          '-profile:v high',   // High profile for better compression
+          '-level 4.0',
+          '-pix_fmt yuv420p',
+          '-movflags +faststart',
+          '-avoid_negative_ts make_zero'
+        ])
+        .on('start', (commandLine) => {
+          console.log('📐 Resize started:', commandLine);
+        })
+        .on('progress', (progress) => {
+          if (progress.percent) {
+            console.log(`📐 Resize progress: ${Math.round(progress.percent)}%`);
+          }
+        })
+        .on('end', () => {
+          console.log('✅ Video resize completed successfully');
+          resolve();
+        })
+        .on('error', (err) => {
+          console.error('❌ Resize error:', err);
+          reject(err);
+        })
+        .save(outputPath);
+    });
+  });
+}
+
 // Stream-based upload for very large files
 async function uploadLargeFileWithStreaming(filePath, publicId) {
   return new Promise((resolve, reject) => {
@@ -334,15 +439,9 @@ async function uploadLargeFileWithStreaming(filePath, publicId) {
         public_id: publicId,
         folder: 'merged-videos',
         chunk_size: 6000000, // 6MB chunks
-        eager_async: true,
-        eager: [
-          { 
-            quality: 'auto:low', 
-            format: 'mp4',
-            video_codec: 'h264',
-            bit_rate: '1m'
-          }
-        ],
+        // No eager transformations for very large files - just upload raw
+        use_filename: false,
+        unique_filename: true,
         expiration: Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60)
       },
       (error, result) => {
@@ -374,13 +473,13 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'FFmpeg Video Merger',
-    version: '2.3.0',
+    version: '2.4.0',
     time: new Date().toISOString(),
     cloudinary: process.env.CLOUDINARY_CLOUD_NAME ? 'configured' : 'not configured',
     autoCleanup: 'enabled (30 days)',
-    qualityPreservation: 'enabled',
-    largeFileHandling: 'enhanced (compression + streaming + chunking)',
-    uploadStrategies: ['sync (<50MB)', 'async (50-100MB)', 'chunked (100-200MB)', 'streaming (>200MB)']
+    qualityPreservation: 'enhanced (smart resize + raw upload)',
+    largeFileHandling: 'enhanced (resize > compression > raw upload)',
+    uploadStrategies: ['sync (<50MB)', 'async (50-100MB)', 'chunked (100-200MB)', 'streaming (>200MB)', 'raw fallback']
   });
 });
 
@@ -469,36 +568,64 @@ app.post('/merge-videos', async (req, res) => {
     
     let finalOutputPath = outputPath;
     let finalFileSizeMB = initialFileSizeMB;
-    let compressionApplied = false;
+    let processingApplied = false;
+    let processingType = 'none';
     
-    // Check if compression is needed for very large files
+    // For files >95MB, try quality-preserving resize first
     if (initialFileSizeMB > 95) {
-      console.log(`📦 File too large (${initialFileSizeMB.toFixed(2)}MB), attempting compression...`);
+      console.log(`📦 Large file detected (${initialFileSizeMB.toFixed(2)}MB), attempting quality-preserving resize...`);
       
       try {
-        const compressedPath = path.join(TEMP_DIR, `compressed_${sessionId}.mp4`);
-        await compressVideoSmart(outputPath, compressedPath, 90);
+        const resizedPath = path.join(TEMP_DIR, `resized_${sessionId}.mp4`);
+        await resizeVideoSmart(outputPath, resizedPath, 1280, 720);
         
-        // Check if compression was successful
-        if (fs.existsSync(compressedPath)) {
-          const compressedStats = fs.statSync(compressedPath);
-          const compressedSizeMB = compressedStats.size / 1024 / 1024;
+        // Check if resize was successful and reduced size
+        if (fs.existsSync(resizedPath)) {
+          const resizedStats = fs.statSync(resizedPath);
+          const resizedSizeMB = resizedStats.size / 1024 / 1024;
           
-          console.log(`📦 Compression complete: ${compressedSizeMB.toFixed(2)}MB`);
+          console.log(`� Resize complete: ${resizedSizeMB.toFixed(2)}MB`);
           
-          // Use compressed version if it's significantly smaller
-          if (compressedSizeMB < initialFileSizeMB * 0.8) {
-            finalOutputPath = compressedPath;
-            finalFileSizeMB = compressedSizeMB;
-            compressionApplied = true;
-            downloadedFiles.push(compressedPath); // Add to cleanup list
+          // Use resized version if it's smaller or if original is very large
+          if (resizedSizeMB < initialFileSizeMB || initialFileSizeMB > 150) {
+            finalOutputPath = resizedPath;
+            finalFileSizeMB = resizedSizeMB;
+            processingApplied = true;
+            processingType = 'resized';
+            downloadedFiles.push(resizedPath); // Add to cleanup list
+            
+            console.log(`✅ Using resized version: ${finalFileSizeMB.toFixed(2)}MB`);
           } else {
-            console.log('⚠️ Compression didn\'t reduce size significantly, using original');
-            fs.unlinkSync(compressedPath); // Remove unsuccessful compression
+            console.log('📐 Resize didn\'t help significantly, using original');
+            fs.unlinkSync(resizedPath); // Remove unsuccessful resize
           }
         }
-      } catch (compressionError) {
-        console.error('⚠️ Compression failed, using original file:', compressionError.message);
+      } catch (resizeError) {
+        console.error('⚠️ Resize failed, will try compression as fallback:', resizeError.message);
+        
+        // Only if resize fails AND file is still very large, try compression
+        if (initialFileSizeMB > 120) {
+          try {
+            console.log(`🎞️ Fallback: Trying compression for very large file...`);
+            const compressedPath = path.join(TEMP_DIR, `compressed_${sessionId}.mp4`);
+            await compressVideoSmart(outputPath, compressedPath, 90);
+            
+            if (fs.existsSync(compressedPath)) {
+              const compressedStats = fs.statSync(compressedPath);
+              const compressedSizeMB = compressedStats.size / 1024 / 1024;
+              
+              console.log(`🎞️ Compression complete: ${compressedSizeMB.toFixed(2)}MB`);
+              
+              finalOutputPath = compressedPath;
+              finalFileSizeMB = compressedSizeMB;
+              processingApplied = true;
+              processingType = 'compressed';
+              downloadedFiles.push(compressedPath);
+            }
+          } catch (compressionError) {
+            console.error('⚠️ Compression also failed, using original file:', compressionError.message);
+          }
+        }
       }
     }
     
@@ -525,10 +652,15 @@ app.post('/merge-videos', async (req, res) => {
       publicId: publicId,
       videosProcessed: videoUrls.length,
       fileSize: finalSize,
-      originalSize: compressionApplied ? `${initialFileSizeMB.toFixed(2)}MB` : finalSize,
-      compressed: compressionApplied,
+      originalSize: processingApplied ? `${initialFileSizeMB.toFixed(2)}MB` : finalSize,
+      processing: {
+        applied: processingApplied,
+        type: processingType,
+        qualityPreserved: processingType === 'resized' || processingType === 'none'
+      },
       autoDelete: '30 days',
-      qualityPreservation: compressionApplied ? 'optimized' : 'preserved',
+      qualityPreservation: processingType === 'resized' ? 'high (resolution optimized)' : 
+                           processingType === 'compressed' ? 'optimized (bitrate reduced)' : 'preserved',
       uploadType: uploadStrategy,
       timestamp: new Date().toISOString()
     };
