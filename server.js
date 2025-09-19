@@ -283,16 +283,17 @@ app.post('/merge-videos', async (req, res) => {
     
     await mergeVideos(downloadedFiles, outputPath);
     
+    // Calculate file size for upload strategy and response
+    const outputStats = fs.statSync(outputPath);
+    const fileSizeMB = outputStats.size / 1024 / 1024;
+    const finalSize = `${fileSizeMB.toFixed(2)}MB`;
+    
     // Upload to Cloudinary
     const publicId = `merged_${Date.now()}_${sessionId}`;
     const cloudinaryUrl = await uploadToCloudinary(outputPath, publicId);
     
     // Clean up temporary files
     cleanupFiles([...downloadedFiles, outputPath]);
-    
-    // Get file size for response
-    const finalStats = fs.existsSync(outputPath) ? fs.statSync(outputPath) : null;
-    const finalSize = finalStats ? `${(finalStats.size / 1024 / 1024).toFixed(2)}MB` : 'Unknown';
 
     // Success response
     const response = {
