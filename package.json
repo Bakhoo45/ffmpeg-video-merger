@@ -1,6 +1,6 @@
 {
   "name": "ffmpeg-video-merger",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Video merger API with Cloudinary integration, auto-cleanup, quality preservation, and large file handling for n8n workflows",
   "main": "server.js",
   "scripts": {
@@ -29,7 +29,12 @@
     "multer": "^1.4.5-lts.1",
     "node-fetch": "^2.7.0",
     "uuid": "^9.0.1",
-    "node-cron": "^3.0.2"
+    "node-cron": "^3.0.2",
+    "fluent-ffmpeg": "^2.1.2",
+    "aws-sdk": "^2.1480.0",
+    "stream-buffers": "^3.0.2",
+    "progress-stream": "^2.0.0",
+    "form-data": "^4.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
